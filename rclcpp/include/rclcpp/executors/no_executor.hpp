@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <sched.h>
 #include <signal.h>
 #include <string>
 #include <unordered_map>
@@ -184,6 +185,15 @@ public:
   RCLCPP_PUBLIC
   void
   set_timer_delay_next(const std::string & name, int64_t delay_ns);
+
+  /**
+   * Provide CPU affinity masks for partitioned scheduling.
+   * The masks are applied to each callback's thread when priority is assigned.
+   * \param masks Map of callback name to cpu_set_t affinity mask
+   */
+  RCLCPP_PUBLIC
+  void
+  set_callback_affinity_masks(const std::unordered_map<std::string, cpu_set_t> & masks);
 protected:
   virtual void
   apply_chain_priorities();
@@ -239,6 +249,9 @@ private:
   std::unordered_map<std::string, std::atomic<int64_t>> timer_hold_until_config_;
   // maps timer name to delay_next (relative ns; 0 = inactive)
   std::unordered_map<std::string, std::atomic<int64_t>> timer_delay_next_config_;
+
+  // maps callback name to CPU affinity mask for partitioned scheduling
+  std::unordered_map<std::string, cpu_set_t> callback_affinity_masks_;
 };
 
 }  // namespace executors

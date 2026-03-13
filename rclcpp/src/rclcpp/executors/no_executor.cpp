@@ -109,6 +109,11 @@ NoExecutor::set_timer_delay_next(const std::string & name, int64_t delay_ns) {
 }
 
 void
+NoExecutor::set_callback_affinity_masks(const std::unordered_map<std::string, cpu_set_t> & masks) {
+  callback_affinity_masks_ = masks;
+}
+
+void
 NoExecutor::start() {
   auto logger = rclcpp::get_logger("NoExecutor");
   RCLCPP_INFO(logger, "Starting NoExecutor with %zu timers", timers.size());
@@ -505,6 +510,15 @@ NoExecutor::assign_or_create(Executable& executable) {
         "To enable RT scheduling, run with 'sudo' or configure /etc/security/limits.conf");
     }
   }
+  if (sched_base->has_cpu_affinity) {
+    if (pthread_setaffinity_np(idle_thread->pthread_id, sizeof(cpu_set_t), &sched_base->cpu_affinity_mask) != 0) {
+      static std::atomic<bool> affinity_warned_once{false};
+      if (!affinity_warned_once.exchange(true)) {
+        auto logger = rclcpp::get_logger("NoExecutor");
+        RCLCPP_WARN(logger, "Failed to set CPU affinity: %s", strerror(errno));
+      }
+    }
+  }
   idle_thread->is_busy.set_val(1, true);
 }
 
@@ -517,7 +531,17 @@ NoExecutor::create_thread(Executable executable) {
     return;
   }
   std::thread new_thread(std::bind(&NoExecutor::thread_start, this, std::move(executable)));
-  sched::syscall_sched_setattr(sched::get_pid(new_thread.native_handle()), &sched_base->sched_attr);
+  pthread_t handle = new_thread.native_handle();
+  sched::syscall_sched_setattr(sched::get_pid(handle), &sched_base->sched_attr);
+  if (sched_base->has_cpu_affinity) {
+    if (pthread_setaffinity_np(handle, sizeof(cpu_set_t), &sched_base->cpu_affinity_mask) != 0) {
+      static std::atomic<bool> affinity_warned_once{false};
+      if (!affinity_warned_once.exchange(true)) {
+        auto logger = rclcpp::get_logger("NoExecutor");
+        RCLCPP_WARN(logger, "Failed to set CPU affinity on new thread: %s", strerror(errno));
+      }
+    }
+  }
   new_thread.detach();
 }
 
@@ -706,6 +730,12 @@ NoExecutor::apply_chain_priorities()
     }
 
     apply_sched_attr_to_entity(entity, SCHED_FIFO, priority);
+
+    auto affinity_it = callback_affinity_masks_.find(callback_name);
+    if (affinity_it != callback_affinity_masks_.end()) {
+      entity->set_cpu_affinity(affinity_it->second);
+      RCLCPP_INFO(logger, "  '%s' -> affinity mask set", callback_name.c_str());
+    }
   }
   RCLCPP_INFO(logger, "Priority allocation complete");
 }
