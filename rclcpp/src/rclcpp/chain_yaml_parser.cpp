@@ -21,6 +21,8 @@
 namespace rclcpp
 {
 
+ChainYamlParser::ChainYamlParser() : user_chains(std::make_shared<std::unordered_map<std::string, userChain>>()) {}
+
 void ChainYamlParser::load_yaml_file(const std::string & new_yaml_file)
 {
   yaml_file = new_yaml_file;
@@ -95,7 +97,7 @@ bool ChainYamlParser::parse()
       const auto deadline = deadline_node.as<std::uint32_t>();
       const auto period = period_node.as<std::uint32_t>();
 
-      user_chains[chain_name] = userChain{chain_name, callbacks_list, deadline, period};
+      user_chains->insert({chain_name, userChain{chain_name, callbacks_list, deadline, period}});
       RCLCPP_DEBUG(
         rclcpp::get_logger("ChainYamlParser"),
         "Successfully parsed chain '%s' with %zu callbacks",
@@ -108,7 +110,7 @@ bool ChainYamlParser::parse()
     }
   }
 
-  if (user_chains.empty()) {
+  if (user_chains->empty()) {
     RCLCPP_ERROR(rclcpp::get_logger("ChainYamlParser"), "No valid chains found in YAML file");
     return false;
   }
