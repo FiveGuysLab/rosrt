@@ -38,12 +38,12 @@ struct userChain
 class RCLCPP_PUBLIC ChainYamlParser
 {
 public:
-  ChainYamlParser() = default;
+  ChainYamlParser();
   ~ChainYamlParser() = default;
 
   void load_yaml_file(const std::string & yaml_file);
   bool parse();
-  const std::unordered_map<std::string, userChain> & get_user_chains() const
+  std::shared_ptr<std::unordered_map<std::string, userChain>> get_user_chains() const
   {
     return user_chains;
   }
@@ -55,7 +55,7 @@ private:
 
   std::string yaml_file;
   YAML::Node yaml_node;
-  std::unordered_map<std::string, userChain> user_chains;
+  std::shared_ptr<std::unordered_map<std::string, userChain>> user_chains;
 };
 
 }  // namespace rclcpp

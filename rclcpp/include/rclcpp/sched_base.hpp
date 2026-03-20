@@ -100,7 +100,18 @@ public:
         return callback_name_;
     }
 
+    void
+    set_cpu_affinity(const cpu_set_t & mask)
+    {
+        cpu_affinity_mask = mask;
+        has_cpu_affinity = true;
+    }
+
     SchedAttr sched_attr;
+
+    /// Only valid when has_cpu_affinity is true.
+    cpu_set_t cpu_affinity_mask = {};
+    bool has_cpu_affinity = false;
 
 protected:
     std::string callback_name_;

@@ -99,10 +99,7 @@ public:
                 "ModeAwareExecutor: failed to parse YAML file: " + yaml_path);
       }
 
-      // Store chains via shared_ptr so ChainPriorityAllocator has shared ownership.
-      mode_chains_[mode] = std::make_shared<std::unordered_map<std::string, rclcpp::userChain>>(
-        parser.get_user_chains());
-
+      mode_chains_[mode] = parser.get_user_chains();
       mode_allocators_[mode] = std::make_shared<rclcpp::detail::ChainPriorityAllocator>(
         mode_chains_[mode]);
     }
