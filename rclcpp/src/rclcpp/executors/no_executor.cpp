@@ -188,7 +188,7 @@ NoExecutor::stop() {
 void
 NoExecutor::execute_executable(Executable &executable) {
   if (executable.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
-    executable.callback_group->callback_group_mutex.lock();
+    ck_spinlock_ticket_lock(&executable.callback_group->callback_group_mutex);
   }
   switch (executable.type)
   {
@@ -213,7 +213,7 @@ NoExecutor::execute_executable(Executable &executable) {
     break;
   }
   if (executable.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
-    executable.callback_group->callback_group_mutex.unlock();
+    ck_spinlock_ticket_unlock(&executable.callback_group->callback_group_mutex);
     executable.callback_group.reset();
   }
 }

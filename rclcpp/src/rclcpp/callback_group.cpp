@@ -35,7 +35,9 @@ CallbackGroup::CallbackGroup(
 : type_(group_type), associated_with_executor_(false),
   can_be_taken_from_(true),
   automatically_add_to_executor_with_node_(automatically_add_to_executor_with_node)
-{}
+{
+  ck_spinlock_ticket_init(&callback_group_mutex);
+}
 
 CallbackGroup::~CallbackGroup()
 {

@@ -4,6 +4,15 @@ project(rclcpp)
 
 find_package(Threads REQUIRED)
 
+#Concurrency Kit for lock-free and ticket spinlock primitives
+set(CK_ROOT "/home/fiveguys/fydp/ck-install/usr/local" CACHE PATH "Concurrency Kit install prefix")
+find_library(CK_LIBRARY NAMES ck PATHS "${CK_ROOT}/lib" NO_DEFAULT_PATH)
+find_path(CK_INCLUDE_DIR NAMES ck_spinlock.h PATHS "${CK_ROOT}/include" NO_DEFAULT_PATH)
+if(NOT CK_LIBRARY OR NOT CK_INCLUDE_DIR)
+  message(FATAL_ERROR "Concurrency Kit not found. Set CK_ROOT to the install prefix.")
+endif()
+message(STATUS "Found Concurrency Kit: ${CK_LIBRARY} (include: ${CK_INCLUDE_DIR})")
+
 find_package(ament_cmake_ros REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(builtin_interfaces REQUIRED)
@@ -194,9 +203,11 @@ endif()
 target_include_directories(${PROJECT_NAME} PUBLIC
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
   "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>"
-  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>"
+  "${CK_INCLUDE_DIR}")
 target_link_libraries(${PROJECT_NAME} ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(${PROJECT_NAME} yaml-cpp)
+target_link_libraries(${PROJECT_NAME} ${CK_LIBRARY})
 # specific order: dependents before dependencies
 ament_target_dependencies(${PROJECT_NAME}
   "ament_index_cpp"
