@@ -100,6 +100,10 @@ if(TARGET test_create_subscription)
     "test_msgs"
   )
 endif()
+ament_add_gtest(test_chain_priority_allocator test_chain_priority_allocator.cpp)
+if(TARGET test_chain_priority_allocator)
+  target_link_libraries(test_chain_priority_allocator ${PROJECT_NAME})
+endif()
 function(test_add_callback_groups_to_executor_for_rmw_implementation)
   set(rmw_implementation_env_var RMW_IMPLEMENTATION=${rmw_implementation})
   ament_add_gmock(test_add_callback_groups_to_executor${target_suffix} test_add_callback_groups_to_executor.cpp
