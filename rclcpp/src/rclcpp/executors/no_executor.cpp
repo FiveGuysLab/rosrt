@@ -462,16 +462,69 @@ std::shared_ptr<rclcpp::sched::SchedBase> get_sched_base(rclcpp::executors::Exec
   }
 }
 
-uint32_t get_mode_prio(rclcpp::executors::Executable& executable) {
-  switch (executable.type)
-  {
-  case ExecutableType::SUBSCRIPTION:
-    return executable.subscription->get_message_prio();
-  case ExecutableType::TIMER:
-    return executable.timer->sched_attr.sched_priority; // TODO: mode-based priority for timers
-  default:
+uint32_t
+NoExecutor::resolve_chain_priority(Executable & executable) {
+  if (executable.type == ExecutableType::TIMER) {
+    return executable.timer->sched_attr.sched_priority;
+  }
+  if (executable.type != ExecutableType::SUBSCRIPTION || !executable.subscription) {
     return 0;
   }
+
+  const std::string & cb_name = executable.subscription->get()->get_callback_name();
+  uint32_t incoming_chain_id = 0;
+  try {
+    incoming_chain_id = executable.subscription->get_message_chain_id();
+  } catch (const std::exception & e) {
+    static std::atomic<bool> warned_once{false};
+    if (!warned_once.exchange(true)) {
+      auto logger = rclcpp::get_logger("NoExecutor");
+      RCLCPP_WARN(
+        logger,
+        "Failed to read propagated chain_id for callback '%s': %s. "
+        "Falling back to the callback's configured scheduling attributes.",
+        cb_name.c_str(), e.what());
+    }
+    return 0;
+  }
+
+  int mode = current_routing_mode_.load(std::memory_order_acquire);
+  auto mode_it = chain_routing_data_.find(mode);
+  if (mode_it == chain_routing_data_.end()) {
+    return 0;
+  }
+
+  auto cb_it = mode_it->second.routing_map.find(cb_name);
+  if (cb_it == mode_it->second.routing_map.end()) {
+    return 0;  // callback not in any chain
+  }
+
+  auto chain_it = cb_it->second.find(incoming_chain_id);
+  if (chain_it == cb_it->second.end()) {
+    return 0;  // unknown incoming chain
+  }
+
+  uint32_t outgoing_chain_id = chain_it->second;
+  try {
+    executable.subscription->set_message_chain_id(outgoing_chain_id);
+  } catch (const std::exception & e) {
+    static std::atomic<bool> warned_once{false};
+    if (!warned_once.exchange(true)) {
+      auto logger = rclcpp::get_logger("NoExecutor");
+      RCLCPP_WARN(
+        logger,
+        "Failed to write propagated chain_id for callback '%s': %s. "
+        "Falling back to the callback's configured scheduling attributes.",
+        cb_name.c_str(), e.what());
+    }
+    return 0;
+  }
+
+  auto prio_it = mode_it->second.chain_priority_map.find(outgoing_chain_id);
+  if (prio_it == mode_it->second.chain_priority_map.end()) {
+    return 0;
+  }
+  return prio_it->second;
 }
 
 void
@@ -490,7 +543,7 @@ NoExecutor::assign_or_create(Executable& executable) {
 	
   idle_thread->executable = std::move(executable);
   int res = 0;
-  uint32_t mode_prio = get_mode_prio(idle_thread->executable);
+  uint32_t mode_prio = this->resolve_chain_priority(idle_thread->executable);
   if (0 < mode_prio && mode_prio < 100) {
     auto mode_sched_attr = sched_base->sched_attr;
     mode_sched_attr.sched_priority = mode_prio;
@@ -522,7 +575,7 @@ NoExecutor::assign_or_create(Executable& executable) {
   idle_thread->is_busy.set_val(1, true);
 }
 
-void 
+void
 NoExecutor::create_thread(Executable executable) {
   auto sched_base = get_sched_base(executable);
   if (sched_base == nullptr) {
@@ -530,9 +583,14 @@ NoExecutor::create_thread(Executable executable) {
     RCLCPP_ERROR(logger, "sched_base is nullptr in create_thread");
     return;
   }
+  uint32_t chain_prio = this->resolve_chain_priority(executable);
+  auto attr = sched_base->sched_attr;
+  if (0 < chain_prio && chain_prio < 100) {
+    attr.sched_priority = chain_prio;
+  }
   std::thread new_thread(std::bind(&NoExecutor::thread_start, this, std::move(executable)));
   pthread_t handle = new_thread.native_handle();
-  sched::syscall_sched_setattr(sched::get_pid(handle), &sched_base->sched_attr);
+  sched::syscall_sched_setattr(sched::get_pid(handle), &attr);
   if (sched_base->has_cpu_affinity) {
     if (pthread_setaffinity_np(handle, sizeof(cpu_set_t), &sched_base->cpu_affinity_mask) != 0) {
       static std::atomic<bool> affinity_warned_once{false};
@@ -704,12 +762,18 @@ NoExecutor::apply_chain_priorities()
 
   auto allocation = chain_priority_allocator_->allocate(named.groups_by_name);
 
-  RCLCPP_INFO(logger, "Chain priority allocation results:");
-  for (const auto & pair : allocation.callback_priorities) {
-    RCLCPP_INFO(logger, "  '%s' -> priority %d", pair.first.c_str(), pair.second);
+  // Store routing data for chain-based priority resolution
+  ChainRoutingData routing;
+  routing.routing_map = allocation.routing_map;
+  routing.chain_priority_map = allocation.chain_priority_map;
+  chain_routing_data_[0] = std::move(routing);
+
+  RCLCPP_INFO(logger, "Chain-based init priority assignment:");
+  for (const auto & pair : allocation.callback_init_priorities) {
+    RCLCPP_INFO(logger, "  '%s' -> SCHED_FIFO priority %d", pair.first.c_str(), pair.second);
   }
 
-  for (const auto & pair : allocation.callback_priorities) {
+  for (const auto & pair : allocation.callback_init_priorities) {
     const auto & callback_name = pair.first;
     const auto priority = pair.second;
     auto entity_it = named.entities_by_name.find(callback_name);
@@ -730,6 +794,12 @@ NoExecutor::apply_chain_priorities()
     }
 
     apply_sched_attr_to_entity(entity, SCHED_FIFO, priority);
+
+    // Set source_chain_id (used by publish_as_source to stamp outgoing messages)
+    auto src_chain_it = allocation.callback_source_chain_ids.find(callback_name);
+    if (src_chain_it != allocation.callback_source_chain_ids.end()) {
+      entity->source_chain_id = src_chain_it->second;
+    }
 
     auto affinity_it = callback_affinity_masks_.find(callback_name);
     if (affinity_it != callback_affinity_masks_.end()) {

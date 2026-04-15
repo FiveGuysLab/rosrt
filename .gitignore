@@ -1,20 +1,24 @@
 rclcpp/.vscode
+.zed/
+compile_flags.txt
 .DS_Store
 build/
 install/
 log/
 
 *
+!*/
 
-!rclcpp/*
-!rclcpp_action/*
-!rclcpp_components/*
-!rclcpp_lifecycle/*
-!rosidl/*
+!rclcpp/**
+!rclcpp_action/**
+!rclcpp_components/**
+!rclcpp_lifecycle/**
+!rosidl/**
 !.gitignore
 !CONTRIBUTING.md
 !LICENSE
 !README.md
+CLAUDE.md
 
 **/__pycache__/
 **/*.pyc

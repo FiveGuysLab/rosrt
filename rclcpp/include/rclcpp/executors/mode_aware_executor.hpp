@@ -215,11 +215,11 @@ public:
       bool in_old = old_cbs.count(cb_name) > 0;
       bool in_new = new_cbs.count(cb_name) > 0;
 
-      auto old_prio_it = old_allocation.callback_priorities.find(cb_name);
-      auto new_prio_it = new_allocation.callback_priorities.find(cb_name);
-      uint16_t old_prio = (old_prio_it != old_allocation.callback_priorities.end())
+      auto old_prio_it = old_allocation.callback_init_priorities.find(cb_name);
+      auto new_prio_it = new_allocation.callback_init_priorities.find(cb_name);
+      uint16_t old_prio = (old_prio_it != old_allocation.callback_init_priorities.end())
                             ? old_prio_it->second : 0;
-      uint16_t new_prio = (new_prio_it != new_allocation.callback_priorities.end())
+      uint16_t new_prio = (new_prio_it != new_allocation.callback_init_priorities.end())
                             ? new_prio_it->second : 0;
 
       // Look up chain periods from both allocations.
@@ -293,6 +293,8 @@ public:
 
     // Step 6: Update active allocator and current mode
     current_mode_.store(target_mode);
+    this->current_routing_mode_.store(
+      static_cast<int>(target_mode), std::memory_order_release);
     this->chain_priority_allocator_ = alloc_it->second;
 
     RCLCPP_INFO(logger, "Mode switch complete: %d -> %d",
@@ -342,7 +344,18 @@ protected:
           std::make_shared<rclcpp::detail::ChainPriorityAllocation>(
           allocator->allocate(named.groups_by_name));
       }
+
+      // Populate chain routing data for this mode
+      const auto & alloc = *mode_allocation_cache_[mode];
+      ChainRoutingData routing;
+      routing.routing_map = alloc.routing_map;
+      routing.chain_priority_map = alloc.chain_priority_map;
+      this->chain_routing_data_[static_cast<int>(mode)] = std::move(routing);
     }
+
+    // Set initial routing mode
+    this->current_routing_mode_.store(
+      static_cast<int>(current_mode_.load()), std::memory_order_release);
   }
 
 private:

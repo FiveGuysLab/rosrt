@@ -69,9 +69,14 @@ namespace rclcpp
         return bundle;
     }
 
-    uint32_t LoanedMsgSubscription::get_message_prio() const
+    uint32_t LoanedMsgSubscription::get_message_chain_id() const
     {
-        return subscription->get_loaned_message_prio(loaned_msg);
+        return subscription->get_loaned_message_chain_id(loaned_msg);
+    }
+
+    void LoanedMsgSubscription::set_message_chain_id(uint32_t chain_id)
+    {
+        subscription->set_loaned_message_chain_id(loaned_msg, chain_id);
     }
 
     void LoanedMsgSubscription::run()
@@ -120,9 +125,14 @@ namespace rclcpp
         return bundle;
     }
 
-    uint32_t GenericMsgSubscription::get_message_prio() const
+    uint32_t GenericMsgSubscription::get_message_chain_id() const
     {
-        return subscription->get_message_prio(message);
+        return subscription->get_message_chain_id(message);
+    }
+
+    void GenericMsgSubscription::set_message_chain_id(uint32_t chain_id)
+    {
+        subscription->set_message_chain_id(message, chain_id);
     }
 
     void GenericMsgSubscription::run()
@@ -161,15 +171,16 @@ namespace rclcpp
         return bundle;
     }
 
-    uint32_t SerializedMsgSubscription::get_message_prio() const
+    uint32_t SerializedMsgSubscription::get_message_chain_id() const
     {
-        RCLCPP_ERROR(
-            rclcpp::get_logger("rclcpp"),
-            "executor %s '%s' unexpectedly failed: %s",
-            "get_message_prio not supported for serialized subscription",
-            subscription->get_topic_name(),
-            "get_message_prio not supported for serialized subscription");
-        return 0;
+        std::shared_ptr<void> message = serialized_msg;
+        return subscription->get_message_chain_id(message);
+    }
+
+    void SerializedMsgSubscription::set_message_chain_id(uint32_t chain_id)
+    {
+        std::shared_ptr<void> message = serialized_msg;
+        subscription->set_message_chain_id(message, chain_id);
     }
 
     void SerializedMsgSubscription::run()

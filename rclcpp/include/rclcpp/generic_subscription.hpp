@@ -148,15 +148,22 @@ public:
   void handle_loaned_message(
     void * loaned_message, const rclcpp::MessageInfo & message_info) override;
 
-  // This function is not implemented
+  // Chain-id propagation is unsupported for generic serialized subscriptions.
   RCLCPP_PUBLIC
   uint32_t
-  get_message_prio(const std::shared_ptr<void> & message) override;
+  get_message_chain_id(const std::shared_ptr<void> & message) override;
 
-  // This function is not implemented
+  RCLCPP_PUBLIC
+  void
+  set_message_chain_id(std::shared_ptr<void> & message, uint32_t chain_id) override;
+
   RCLCPP_PUBLIC
   uint32_t
-  get_loaned_message_prio(void * loaned_message) override;
+  get_loaned_message_chain_id(void * loaned_message) override;
+
+  RCLCPP_PUBLIC
+  void
+  set_loaned_message_chain_id(void * loaned_message, uint32_t chain_id) override;
 
   // Same as return_serialized_message() as the subscription is to serialized_messages only
   RCLCPP_PUBLIC

@@ -75,8 +75,8 @@ VALID_CONSTANT_NAME_PATTERN = re.compile('^[A-Z]([A-Z0-9_]?[A-Z0-9]+)*$')
 
 
 # Implicit field constants
-RCLCPP_PRIO_LABEL = 'internal_rclcpp_prio'
-RCLCPP_PRIO_TYPE = 'uint32'
+RCLCPP_CHAIN_ID_LABEL = 'internal_rclcpp_chain_id'
+RCLCPP_CHAIN_ID_TYPE = 'uint32'
 
 
 class InvalidSpecification(Exception):
@@ -547,7 +547,7 @@ def parse_message_string(pkg_name, msg_name, message_string):
         current_comments = []
 
     # Add implicit fields
-    fields.append(Field(Type(RCLCPP_PRIO_TYPE, context_package_name=pkg_name), RCLCPP_PRIO_LABEL, None))
+    fields.append(Field(Type(RCLCPP_CHAIN_ID_TYPE, context_package_name=pkg_name), RCLCPP_CHAIN_ID_LABEL, None))
 
     msg = MessageSpecification(pkg_name, msg_name, fields, constants)
     msg.annotations['comment'] = message_comments

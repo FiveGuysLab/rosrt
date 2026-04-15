@@ -220,6 +220,16 @@ protected:
 
   std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
 
+  struct ChainRoutingData {
+    std::unordered_map<std::string, std::unordered_map<uint32_t, uint32_t>> routing_map;
+    std::unordered_map<uint32_t, uint16_t> chain_priority_map;
+  };
+  std::unordered_map<int, ChainRoutingData> chain_routing_data_;
+  std::atomic<int> current_routing_mode_{0};
+
+  uint32_t
+  resolve_chain_priority(Executable & executable);
+
 private:
   void
   handle_subscription(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::SubscriptionBase::SharedPtr &subscription, size_t num_msgs);

@@ -349,13 +349,6 @@ public:
     }
   }
 
-  uint32_t
-  get_message_prio(const std::shared_ptr<void> & message ) override
-  {
-    auto typed_message = std::static_pointer_cast<ROSMessageType>(message);
-    return rosidl_generator_traits::get_prio(*typed_message);
-  }
-
   void
   handle_serialized_message(
     const std::shared_ptr<rclcpp::SerializedMessage> & serialized_message,
@@ -398,10 +391,31 @@ public:
   }
 
   uint32_t
-  get_loaned_message_prio(void * loaned_message) override
+  get_message_chain_id(const std::shared_ptr<void> & message) override
   {
-    auto typed_message = static_cast<ROSMessageType *>(loaned_message);
-    return rosidl_generator_traits::get_prio(*typed_message);
+    auto typed_message = std::static_pointer_cast<ROSMessageType>(message);
+    return rosidl_generator_traits::get_chain_id(*typed_message);
+  }
+
+  void
+  set_message_chain_id(std::shared_ptr<void> & message, uint32_t chain_id) override
+  {
+    auto typed_message = std::static_pointer_cast<ROSMessageType>(message);
+    rosidl_generator_traits::set_chain_id(*typed_message, chain_id);
+  }
+
+  uint32_t
+  get_loaned_message_chain_id(void * loaned_message) override
+  {
+    return rosidl_generator_traits::get_chain_id(
+      *static_cast<ROSMessageType *>(loaned_message));
+  }
+
+  void
+  set_loaned_message_chain_id(void * loaned_message, uint32_t chain_id) override
+  {
+    rosidl_generator_traits::set_chain_id(
+      *static_cast<ROSMessageType *>(loaned_message), chain_id);
   }
 
   /// Return the borrowed message.

@@ -109,6 +109,10 @@ public:
 
     SchedAttr sched_attr;
 
+    /// Chain ID for source timers to stamp on outgoing messages.
+    /// Set during init from allocation data (tightest-deadline chain).
+    uint32_t source_chain_id = 0;
+
     /// Only valid when has_cpu_affinity is true.
     cpu_set_t cpu_affinity_mask = {};
     bool has_cpu_affinity = false;
