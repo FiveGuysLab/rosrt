@@ -128,7 +128,7 @@ public:
     state_updater(state_);
     ModeEnumT target_mode = mode_tester_(state_);
 
-    if (target_mode == current_mode_) {
+    if (target_mode == current_mode_.load()) {
       return;
     }
 
@@ -151,7 +151,7 @@ public:
       return;
     }
 
-    ModeEnumT old_mode = current_mode_;
+    ModeEnumT old_mode = current_mode_.load();
     RCLCPP_INFO(logger, "MCR: mode %d -> %d",
       static_cast<int>(old_mode), static_cast<int>(target_mode));
 
@@ -163,7 +163,7 @@ public:
     auto named = this->collect_named_entities();
     if (named.groups_by_name.empty()) {
       RCLCPP_WARN(logger, "No named callbacks registered; applying mode switch directly");
-      current_mode_ = target_mode;
+      current_mode_.store(target_mode);
       this->chain_priority_allocator_ = alloc_it->second;
       transition_in_progress_.store(false, std::memory_order_release);
       return;
@@ -292,7 +292,7 @@ public:
     }
 
     // Step 6: Update active allocator and current mode
-    current_mode_ = target_mode;
+    current_mode_.store(target_mode);
     this->chain_priority_allocator_ = alloc_it->second;
 
     RCLCPP_INFO(logger, "Mode switch complete: %d -> %d",
@@ -317,7 +317,7 @@ public:
   /// Return the currently active mode.
   ModeEnumT get_current_mode() const
   {
-    return current_mode_;
+    return current_mode_.load();
   }
 
   /// Return whether a mode transition is currently in progress.
@@ -370,7 +370,7 @@ private:
     mode_allocation_cache_;
 
   ModeTesterFn mode_tester_;
-  ModeEnumT current_mode_;
+  std::atomic<ModeEnumT> current_mode_;
   StateT state_;
 
   ModeOffsetMap mode_offsets_;
