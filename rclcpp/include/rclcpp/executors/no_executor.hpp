@@ -48,7 +48,7 @@ class ChainPriorityAllocator;
 }  // namespace rclcpp
 
 #include "rclcpp/cond.hpp"
-#include "rclcpp/ck_ticket_stack.hpp"
+#include "rclcpp/stack.hpp"
 
 namespace rclcpp
 {
@@ -129,7 +129,7 @@ public:
   void
   execute_executable(Executable &executable);
 
-  syncutil::CkTicketStack<ThreadDataNoExec> idle_threads;
+  syncutil::StackAtomic<ThreadDataNoExec> idle_threads;
 
   RCLCPP_PUBLIC
   void
