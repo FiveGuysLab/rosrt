@@ -113,7 +113,7 @@ SingleThreadedExecutor::thread_start(AnyExecutable any_exec, std::shared_ptr<voi
 
 void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec, std::shared_ptr<void>& message, rclcpp::MessageInfo* message_info) {
   if (any_exec.callback_group->type() == CallbackGroupType::MutuallyExclusive) {
-    any_exec.callback_group->callback_group_mutex.lock();
+    ck_spinlock_ticket_lock(&any_exec.callback_group->callback_group_mutex);
     if (any_exec.subscription == nullptr)
     {
       execute_any_executable(any_exec);
@@ -130,7 +130,7 @@ void SingleThreadedExecutor::execute_executable(AnyExecutable any_exec, std::sha
       any_exec.subscription->return_message(message);
       delete message_info;
     }
-    any_exec.callback_group->callback_group_mutex.unlock();
+    ck_spinlock_ticket_unlock(&any_exec.callback_group->callback_group_mutex);
     any_exec.callback_group.reset();
     return;
   }

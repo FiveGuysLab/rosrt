@@ -21,6 +21,10 @@
 #include <mutex>
 #include <vector>
 
+extern "C" {
+#include <spinlock/ticket.h>
+}
+
 #include "rclcpp/client.hpp"
 #include "rclcpp/context.hpp"
 #include "rclcpp/guard_condition.hpp"
@@ -230,7 +234,7 @@ protected:
   CallbackGroupType type_;
   // Mutex to protect the subsequent vectors of pointers.
   mutable std::mutex mutex_;
-	std::mutex callback_group_mutex;
+	ck_spinlock_ticket_t callback_group_mutex;
   std::atomic_bool associated_with_executor_;
   std::vector<rclcpp::SubscriptionBase::WeakPtr> subscription_ptrs_;
   std::vector<rclcpp::TimerBase::WeakPtr> timer_ptrs_;
