@@ -235,32 +235,25 @@ public:
   template<typename T>
   void publish_as_source(T && message, rclcpp::TimerBase::SharedPtr & source)
   {
-    rosidl_generator_traits::set_chain_id(message, source->source_chain_id);
-    this->publish(message);
+    this->publish(message, source->source_chain_id);
   }
 
   template<typename T, typename InheritedMessage>
   void publish_as_intermediate(T && message, std::unique_ptr<InheritedMessage> inherited_message)
   {
-    rosidl_generator_traits::set_chain_id(
-      message, rosidl_generator_traits::get_chain_id(*inherited_message));
-    this->publish(message);
+    this->publish(message, rosidl_generator_traits::get_chain_id(*inherited_message));
   }
 
   template<typename T, typename InheritedMessage>
   void publish_as_intermediate(T && message, const InheritedMessage & inherited_message)
   {
-    rosidl_generator_traits::set_chain_id(
-      message, rosidl_generator_traits::get_chain_id(inherited_message));
-    this->publish(message);
+    this->publish(message, rosidl_generator_traits::get_chain_id(inherited_message));
   }
 
   template<typename T, typename InheritedMessage>
   void publish_as_intermediate(T && message, std::shared_ptr<InheritedMessage> inherited_message)
   {
-    rosidl_generator_traits::set_chain_id(
-      message, rosidl_generator_traits::get_chain_id(*inherited_message));
-    this->publish(message);
+    this->publish(message, rosidl_generator_traits::get_chain_id(*inherited_message));
   }
 
   // NOTE: impossible to extract from type adapted source message. Would need big refactor to support. Would need to update callback signatures to accomdate them....
@@ -307,6 +300,24 @@ public:
     }
   }
 
+  /// Publish a message on the topic, stamping the given chain_id onto it.
+  /**
+   * Enabled for non-TypeAdapter ROS message types held via unique_ptr.
+   *
+   * \param[in] msg A unique pointer to the message to send.
+   * \param[in] chain_id The chain_id to stamp onto the message.
+   */
+  template<typename T>
+  typename std::enable_if_t<
+    rosidl_generator_traits::is_message<T>::value &&
+    std::is_same<T, ROSMessageType>::value
+  >
+  publish(std::unique_ptr<T, ROSMessageTypeDeleter> msg, uint32_t chain_id)
+  {
+    rosidl_generator_traits::set_chain_id(*msg, chain_id);
+    this->publish(std::move(msg));
+  }
+
   /// Publish a message on the topic.
   /**
    * This signature is enabled if the object being published is
@@ -336,6 +347,24 @@ public:
     // A shared_ptr<const MessageT> could also be constructed here.
     auto unique_msg = this->duplicate_ros_message_as_unique_ptr(msg);
     this->publish(std::move(unique_msg));
+  }
+
+  /// Publish a message on the topic, stamping the given chain_id onto it.
+  /**
+   * Enabled for non-TypeAdapter ROS message types held via lvalue reference.
+   *
+   * \param[in] msg A reference to the message to send.
+   * \param[in] chain_id The chain_id to stamp onto the message.
+   */
+  template<typename T>
+  typename std::enable_if_t<
+    rosidl_generator_traits::is_message<T>::value &&
+    std::is_same<T, ROSMessageType>::value
+  >
+  publish(T & msg, uint32_t chain_id)
+  {
+    rosidl_generator_traits::set_chain_id(msg, chain_id);
+    this->publish(static_cast<const T &>(msg));
   }
 
   /// Publish a message on the topic.
@@ -504,6 +533,18 @@ public:
       // and thus the destructor of rclcpp::LoanedMessage cleans up the memory.
       this->do_inter_process_publish(loaned_msg.get());
     }
+  }
+
+  /// Publish a LoanedMessage on the topic, stamping the given chain_id onto it.
+  /**
+   * \param loaned_msg The LoanedMessage instance to be published.
+   * \param chain_id The chain_id to stamp onto the message.
+   */
+  void
+  publish(rclcpp::LoanedMessage<ROSMessageType, AllocatorT> && loaned_msg, uint32_t chain_id)
+  {
+    rosidl_generator_traits::set_chain_id(loaned_msg.get(), chain_id);
+    this->publish(std::move(loaned_msg));
   }
 
   [[deprecated("use get_published_type_allocator() or get_ros_message_type_allocator() instead")]]
