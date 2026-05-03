@@ -129,7 +129,10 @@ public:
 
   void
   set_sched_attr(const sched::SchedAttr& sched_attr) override;
-  
+
+  void
+  set_policy_priority(uint32_t policy, uint32_t priority) override;
+
   void
   set_callback_name(const std::string & callback_name) override;
 

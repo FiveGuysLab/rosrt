@@ -459,10 +459,18 @@ SubscriptionBase::get_content_filter() const
 }
 
 void
-SubscriptionBase::set_sched_attr(const sched::SchedAttr& sched_attr) {  
-  this->sched_attr = sched_attr;
-  if (use_intra_process_) {
-    this->subscription_intra_process_->sched_attr = sched_attr;
+SubscriptionBase::set_sched_attr(const sched::SchedAttr& sched_attr) {
+  rclcpp::sched::SchedBase::set_sched_attr(sched_attr);
+  if (use_intra_process_ && this->subscription_intra_process_) {
+    this->subscription_intra_process_->set_sched_attr(sched_attr);
+  }
+}
+
+void
+SubscriptionBase::set_policy_priority(uint32_t policy, uint32_t priority) {
+  rclcpp::sched::SchedBase::set_policy_priority(policy, priority);
+  if (use_intra_process_ && this->subscription_intra_process_) {
+    this->subscription_intra_process_->set_policy_priority(policy, priority);
   }
 }
 

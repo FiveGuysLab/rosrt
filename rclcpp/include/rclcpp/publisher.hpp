@@ -235,7 +235,7 @@ public:
   template<typename T>
   void publish_as_source(T && message, rclcpp::TimerBase::SharedPtr & source)
   {
-    this->publish(message, source->source_chain_id);
+    this->publish(message, source->source_chain_id.load(std::memory_order_acquire));
   }
 
   template<typename T, typename InheritedMessage>
@@ -300,13 +300,7 @@ public:
     }
   }
 
-  /// Publish a message on the topic, stamping the given chain_id onto it.
-  /**
-   * Enabled for non-TypeAdapter ROS message types held via unique_ptr.
-   *
-   * \param[in] msg A unique pointer to the message to send.
-   * \param[in] chain_id The chain_id to stamp onto the message.
-   */
+  /// Publish stamping chain_id onto the message (unique_ptr variant).
   template<typename T>
   typename std::enable_if_t<
     rosidl_generator_traits::is_message<T>::value &&
@@ -349,13 +343,7 @@ public:
     this->publish(std::move(unique_msg));
   }
 
-  /// Publish a message on the topic, stamping the given chain_id onto it.
-  /**
-   * Enabled for non-TypeAdapter ROS message types held via lvalue reference.
-   *
-   * \param[in] msg A reference to the message to send.
-   * \param[in] chain_id The chain_id to stamp onto the message.
-   */
+  /// Publish stamping chain_id onto the message (lvalue reference variant).
   template<typename T>
   typename std::enable_if_t<
     rosidl_generator_traits::is_message<T>::value &&
@@ -535,11 +523,7 @@ public:
     }
   }
 
-  /// Publish a LoanedMessage on the topic, stamping the given chain_id onto it.
-  /**
-   * \param loaned_msg The LoanedMessage instance to be published.
-   * \param chain_id The chain_id to stamp onto the message.
-   */
+  /// Publish stamping chain_id onto the message (LoanedMessage variant).
   void
   publish(rclcpp::LoanedMessage<ROSMessageType, AllocatorT> && loaned_msg, uint32_t chain_id)
   {

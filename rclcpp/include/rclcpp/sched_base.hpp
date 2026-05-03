@@ -85,8 +85,38 @@ friend class executors::SingleThreadedExecutor;
 friend class executors::NoExecutor;
 public:
     virtual ~SchedBase() = default;
+
+    /// Init-only: set the full sched_attr struct. At runtime, use set_policy_priority().
     virtual void
     set_sched_attr(const SchedAttr& sched_attr);
+
+    /// Atomic, signal-safe runtime update of (policy, priority).
+    virtual void
+    set_policy_priority(uint32_t policy, uint32_t priority)
+    {
+        uint64_t packed = (static_cast<uint64_t>(policy) << 32) |
+            static_cast<uint64_t>(priority);
+        current_policy_priority_.store(packed, std::memory_order_release);
+    }
+
+    /// Build a SchedAttr suitable for sched_setattr() from the immutable struct
+    /// + the currently-active policy/priority atomic.
+    SchedAttr
+    get_current_sched_attr() const
+    {
+        SchedAttr attr = sched_attr;
+        uint64_t packed = current_policy_priority_.load(std::memory_order_acquire);
+        attr.sched_policy = static_cast<uint32_t>(packed >> 32);
+        attr.sched_priority = static_cast<uint32_t>(packed & 0xFFFFFFFFu);
+        return attr;
+    }
+
+    uint32_t
+    get_current_priority() const
+    {
+        uint64_t packed = current_policy_priority_.load(std::memory_order_acquire);
+        return static_cast<uint32_t>(packed & 0xFFFFFFFFu);
+    }
 
     virtual void
     set_callback_name(const std::string& callback_name)
@@ -100,6 +130,12 @@ public:
         return callback_name_;
     }
 
+    const SchedAttr &
+    get_sched_attr() const
+    {
+        return sched_attr;
+    }
+
     void
     set_cpu_affinity(const cpu_set_t & mask)
     {
@@ -107,17 +143,21 @@ public:
         has_cpu_affinity = true;
     }
 
-    SchedAttr sched_attr;
-
-    /// Chain ID for source timers to stamp on outgoing messages.
-    /// Set during init from allocation data (tightest-deadline chain).
-    uint32_t source_chain_id = 0;
+    /// Chain ID stamped onto outgoing messages by source timers.
+    /// Init: set from allocation. Runtime: updated atomically at MCR time.
+    std::atomic<uint32_t> source_chain_id{0};
 
     /// Only valid when has_cpu_affinity is true.
     cpu_set_t cpu_affinity_mask = {};
     bool has_cpu_affinity = false;
 
 protected:
+    /// Kernel-facing scheduling attributes. Init-only writes; immutable at runtime.
+    SchedAttr sched_attr;
+
+    /// Packed (policy << 32) | priority for atomic runtime updates.
+    std::atomic<uint64_t> current_policy_priority_{0};
+
     std::string callback_name_;
 };
 

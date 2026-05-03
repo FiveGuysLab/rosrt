@@ -53,9 +53,12 @@ public:
   explicit ChainPriorityAllocator(
     std::shared_ptr<const std::unordered_map<std::string, userChain>> user_chains);
 
+  /// Chain IDs run from `chain_id_prefix + 1` upwards. ModeAwareExecutor uses
+  /// per-mode prefixes (1000, 2000, ...) for global uniqueness across modes.
   ChainPriorityAllocation allocate(
     const std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> &
-    callback_groups_by_name);
+    callback_groups_by_name,
+    uint32_t chain_id_prefix = 0);
 
 private:
   std::shared_ptr<const std::unordered_map<std::string, userChain>> user_chains_;

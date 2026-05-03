@@ -36,13 +36,14 @@ ChainPriorityAllocator::ChainPriorityAllocator(
 
 ChainPriorityAllocation ChainPriorityAllocator::allocate(
   const std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> &
-  callback_groups_by_name)
+  callback_groups_by_name,
+  uint32_t chain_id_prefix)
 {
   ChainPriorityAllocation allocation;
   const auto logger = get_chain_priority_logger();
 
-  // 1. Assign numeric chain IDs (0 reserved for source/unresolved)
-  uint32_t next_id = 1;
+  // 1. Assign numeric chain IDs (chain_id 0 reserved as source/unresolved sentinel).
+  uint32_t next_id = chain_id_prefix + 1;
   for (const auto & [name, chain] : *user_chains_) {
     allocation.chain_name_to_id[name] = next_id++;
   }
