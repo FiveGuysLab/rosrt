@@ -75,6 +75,10 @@ public:
     const std::shared_ptr<rclcpp::SerializedMessage> &, const rclcpp::MessageInfo &) override {}
   void return_message(std::shared_ptr<void> &) override {}
   void return_serialized_message(std::shared_ptr<rclcpp::SerializedMessage> &) override {}
+  uint32_t get_message_chain_id(const std::shared_ptr<void> &) override {return 0;}
+  void set_message_chain_id(std::shared_ptr<void> &, uint32_t) override {}
+  uint32_t get_loaned_message_chain_id(void *) override {return 0;}
+  void set_loaned_message_chain_id(void *, uint32_t) override {}
 };
 
 class TestNodeTopics : public ::testing::Test
