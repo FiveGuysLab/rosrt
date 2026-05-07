@@ -1,7 +1,9 @@
 #ifndef RCLCPP__EXECUTORS__MODE_AWARE_EXECUTOR_HPP_
 #define RCLCPP__EXECUTORS__MODE_AWARE_EXECUTOR_HPP_
 
+#include <algorithm>
 #include <atomic>
+#include <climits>
 #include <ctime>
 #include <cerrno>
 #include <cstring>
@@ -142,13 +144,21 @@ public:
       return;
     }
 
-    // Atomically claim the transition slot — rejects concurrent MCRs
-    bool expected = false;
-    if (!transition_in_progress_.compare_exchange_strong(
-        expected, true, std::memory_order_acq_rel))
+    // Atomically claim the transition slot — rejects concurrent MCRs.
     {
-      RCLCPP_WARN(logger, "Mode transition already in progress; ignoring MCR");
-      return;
+      int64_t cur = mcr_ban_until_.load(std::memory_order_acquire);
+      while (true) {
+        if (now_ns() < cur) {
+          RCLCPP_WARN(logger, "Mode transition already in progress; ignoring MCR");
+          return;
+        }
+        if (mcr_ban_until_.compare_exchange_weak(
+            cur, INT64_MAX,
+            std::memory_order_acq_rel, std::memory_order_acquire))
+        {
+          break;
+        }
+      }
     }
 
     ModeEnumT old_mode = current_mode_.load();
@@ -158,6 +168,10 @@ public:
     // Record MCR timestamp
     struct timespec mcr_time;
     clock_gettime(CLOCK_MONOTONIC, &mcr_time);
+    int64_t mcr_ns = static_cast<int64_t>(mcr_time.tv_sec) * 1'000'000'000L + mcr_time.tv_nsec;
+
+    // Track (hold_until_ns, new_period_ns) for changed/wholly-new timers.
+    std::vector<std::pair<int64_t, int64_t>> changed_set;
 
     // Step 1: Collect all named callback entities from registered nodes
     auto named = this->collect_named_entities();
@@ -165,7 +179,7 @@ public:
       RCLCPP_WARN(logger, "No named callbacks registered; applying mode switch directly");
       current_mode_.store(target_mode);
       this->chain_priority_allocator_ = alloc_it->second;
-      transition_in_progress_.store(false, std::memory_order_release);
+      mcr_ban_until_.store(now_ns(), std::memory_order_release);  // re-open immediately
       return;
     }
 
@@ -178,7 +192,7 @@ public:
       RCLCPP_ERROR(
         logger,
         "mode_allocation_cache_ not populated; call spin() before modeUpdate()");
-      transition_in_progress_.store(false, std::memory_order_release);
+      mcr_ban_until_.store(now_ns(), std::memory_order_release);  // re-open immediately
       return;
     }
     const auto & old_allocation = *old_cache_it->second;
@@ -245,12 +259,13 @@ public:
       } else if (!in_old && in_new) {
         // (b) WHOLLY NEW: apply FIFO + period immediately; timer held until MCR + Y_i
         if (offset_ns > 0) {
-          int64_t mcr_ns = (int64_t)mcr_time.tv_sec * 1'000'000'000L + mcr_time.tv_nsec;
           this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
         }
         apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
         if (new_period_ns > 0) {
           this->set_timer_period(cb_name, new_period_ns);
+          int64_t hold_until = mcr_ns + (offset_ns > 0 ? offset_ns : 0);
+          changed_set.emplace_back(hold_until, new_period_ns);
         }
         RCLCPP_INFO(logger, "  [WHOLLY NEW] '%s' -> FIFO(%u), period %ld ns%s",
           cb_name.c_str(), new_prio, new_period_ns,
@@ -259,12 +274,13 @@ public:
       } else if (in_old && in_new && old_prio != new_prio) {
         // (c) CHANGED: apply new priority + period immediately; timer held until MCR + Y_i
         if (offset_ns > 0) {
-          int64_t mcr_ns = (int64_t)mcr_time.tv_sec * 1'000'000'000L + mcr_time.tv_nsec;
           this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
         }
         apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
         if (new_period_ns > 0) {
           this->set_timer_period(cb_name, new_period_ns);
+          int64_t hold_until = mcr_ns + (offset_ns > 0 ? offset_ns : 0);
+          changed_set.emplace_back(hold_until, new_period_ns);
         }
         RCLCPP_INFO(logger, "  [CHANGED] '%s' FIFO(%u) -> FIFO(%u), period %ld ns%s",
           cb_name.c_str(), old_prio, new_prio, new_period_ns,
@@ -297,7 +313,15 @@ public:
 
     RCLCPP_INFO(logger, "Mode switch complete: %d -> %d",
       static_cast<int>(old_mode), static_cast<int>(target_mode));
-    transition_in_progress_.store(false, std::memory_order_release);
+
+    // Compute the real MCR-completion deadline:
+    // max over changed/wholly-new timers of (hold_until + new_period).
+    // assumes response_time <= period.
+    int64_t real_deadline = now_ns();
+    for (const auto & [hold_until, period] : changed_set) {
+      real_deadline = std::max(real_deadline, hold_until + period);
+    }
+    mcr_ban_until_.store(real_deadline, std::memory_order_release);
   }
 
   /// Invalidate the allocation cache when nodes are added/removed so
@@ -321,9 +345,10 @@ public:
   }
 
   /// Return whether a mode transition is currently in progress.
+  /// True while the MCR ban window has not yet elapsed.
   bool is_transition_in_progress() const
   {
-    return transition_in_progress_.load();
+    return now_ns() < mcr_ban_until_.load(std::memory_order_acquire);
   }
 
 protected:
@@ -346,6 +371,14 @@ protected:
   }
 
 private:
+  /// Current time in nanoseconds on CLOCK_MONOTONIC.
+  static int64_t now_ns()
+  {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1'000'000'000L + ts.tv_nsec;
+  }
+
   /// Get all callback names referenced in any chain for a given mode.
   std::unordered_set<std::string> get_callback_names_for_mode(ModeEnumT mode) const
   {
@@ -374,7 +407,9 @@ private:
   StateT state_;
 
   ModeOffsetMap mode_offsets_;
-  std::atomic<bool> transition_in_progress_{false};
+  // Nanosecond timestamp (CLOCK_MONOTONIC) before which a new MCR is rejected.
+  // 0 = open (first MCR always accepted). INT64_MAX = in-progress sentinel.
+  std::atomic<int64_t> mcr_ban_until_{0};
 };
 
 }  // namespace executors
