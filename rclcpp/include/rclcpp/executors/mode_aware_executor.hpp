@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <climits>
 #include <ctime>
 #include <cerrno>
@@ -171,7 +172,9 @@ public:
     int64_t mcr_ns = static_cast<int64_t>(mcr_time.tv_sec) * 1'000'000'000L + mcr_time.tv_nsec;
 
     // Track (hold_until_ns, new_period_ns) for changed/wholly-new timers.
-    std::vector<std::pair<int64_t, int64_t>> changed_set;
+    // Next-fire time (ns, CLOCK_MONOTONIC) for each changed/wholly-new timer.
+    // = mcr_ns + Y_i if held, else mcr_ns. Real deadline = max of these.
+    std::vector<int64_t> changed_set;
 
     // Step 1: Collect all named callback entities from registered nodes
     auto named = this->collect_named_entities();
@@ -207,6 +210,28 @@ public:
     auto offset_it = mode_offsets_.find({old_mode, target_mode});
     const auto & offsets = (offset_it != mode_offsets_.end())
       ? offset_it->second : empty_offsets;
+
+    // Helper: actual next fire time (abs ns, CLOCK_MONOTONIC) for a timer.
+    // = max(now + time_until_trigger, hold_until)
+    // time_until_trigger reflects the timer's period schedule from its last fire.
+    // hold_until enforces the MCR protocol offset (Y_i). Both must elapse before firing.
+    auto next_fire_ns = [&](const std::string & name, int64_t hold_until) -> int64_t {
+      auto grp_it = named.groups_by_name.find(name);
+      if (grp_it == named.groups_by_name.end() || !grp_it->second) {
+        return hold_until;
+      }
+      auto tmr = grp_it->second->find_timer_ptrs_if(
+        [](const rclcpp::TimerBase::SharedPtr &) { return true; });
+      if (!tmr) {
+        return hold_until;
+      }
+      auto tut = tmr->time_until_trigger();
+      if (tut == std::chrono::nanoseconds::max()) {
+        return hold_until;  // timer is canceled
+      }
+      int64_t period_fire = now_ns() + std::max(int64_t{0}, tut.count());
+      return std::max(period_fire, hold_until);
+    };
 
     // Step 5: Classify each callback and apply changes immediately
     for (const auto & [cb_name, entity] : named.entities_by_name) {
@@ -258,30 +283,30 @@ public:
 
       } else if (!in_old && in_new) {
         // (b) WHOLLY NEW: apply FIFO + period immediately; timer held until MCR + Y_i
+        int64_t hold_until = mcr_ns + (offset_ns > 0 ? offset_ns : 0);
         if (offset_ns > 0) {
-          this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
+          this->set_timer_hold_until(cb_name, hold_until);
         }
         apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
         if (new_period_ns > 0) {
           this->set_timer_period(cb_name, new_period_ns);
-          int64_t hold_until = mcr_ns + (offset_ns > 0 ? offset_ns : 0);
-          changed_set.emplace_back(hold_until, new_period_ns);
         }
+        changed_set.push_back(next_fire_ns(cb_name, hold_until));
         RCLCPP_INFO(logger, "  [WHOLLY NEW] '%s' -> FIFO(%u), period %ld ns%s",
           cb_name.c_str(), new_prio, new_period_ns,
           offset_ns > 0 ? ", held until MCR+offset" : "");
 
       } else if (in_old && in_new && old_prio != new_prio) {
         // (c) CHANGED: apply new priority + period immediately; timer held until MCR + Y_i
+        int64_t hold_until = mcr_ns + (offset_ns > 0 ? offset_ns : 0);
         if (offset_ns > 0) {
-          this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
+          this->set_timer_hold_until(cb_name, hold_until);
         }
         apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
         if (new_period_ns > 0) {
           this->set_timer_period(cb_name, new_period_ns);
-          int64_t hold_until = mcr_ns + (offset_ns > 0 ? offset_ns : 0);
-          changed_set.emplace_back(hold_until, new_period_ns);
         }
+        changed_set.push_back(next_fire_ns(cb_name, hold_until));
         RCLCPP_INFO(logger, "  [CHANGED] '%s' FIFO(%u) -> FIFO(%u), period %ld ns%s",
           cb_name.c_str(), old_prio, new_prio, new_period_ns,
           offset_ns > 0 ? ", held until MCR+offset" : "");
@@ -314,12 +339,11 @@ public:
     RCLCPP_INFO(logger, "Mode switch complete: %d -> %d",
       static_cast<int>(old_mode), static_cast<int>(target_mode));
 
-    // Compute the real MCR-completion deadline:
-    // max over changed/wholly-new timers of (hold_until + new_period).
-    // assumes response_time <= period.
+    // Real deadline = max next-fire time across all changed/wholly-new timers.
+    // Each timer's next-fire = mcr_ns + Y_i (if held) or mcr_ns (if not held).
     int64_t real_deadline = now_ns();
-    for (const auto & [hold_until, period] : changed_set) {
-      real_deadline = std::max(real_deadline, hold_until + period);
+    for (int64_t next_fire : changed_set) {
+      real_deadline = std::max(real_deadline, next_fire);
     }
     mcr_ban_until_.store(real_deadline, std::memory_order_release);
   }
