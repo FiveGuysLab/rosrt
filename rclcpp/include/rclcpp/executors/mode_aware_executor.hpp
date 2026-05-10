@@ -164,9 +164,7 @@ public:
     clock_gettime(CLOCK_MONOTONIC, &mcr_time);
     int64_t mcr_ns = static_cast<int64_t>(mcr_time.tv_sec) * 1'000'000'000L + mcr_time.tv_nsec;
 
-    // Track (hold_until_ns, new_period_ns) for changed/wholly-new timers.
     // Next-fire time (ns, CLOCK_MONOTONIC) for each changed/wholly-new timer.
-    // = mcr_ns + Y_i if held, else mcr_ns. Real deadline = max of these.
     std::vector<int64_t> changed_set;
 
     // Step 1: Collect all named callback entities from registered nodes
