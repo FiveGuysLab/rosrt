@@ -164,7 +164,8 @@ public:
     clock_gettime(CLOCK_MONOTONIC, &mcr_time);
     int64_t mcr_ns = static_cast<int64_t>(mcr_time.tv_sec) * 1'000'000'000L + mcr_time.tv_nsec;
 
-    // Next-fire time (ns, CLOCK_MONOTONIC) for each changed/wholly-new timer.
+    // Track (hold_until_ns, new_period_ns) for changed/wholly-new timers.
+    // Next-fire time (ns, CLOCK_MONOTONIC) = mcr_ns + Y_i if held, else mcr_ns.
     std::vector<int64_t> changed_set;
 
     // Step 1: Collect all named callback entities from registered nodes
@@ -202,8 +203,6 @@ public:
 
     // Helper: actual next fire time (abs ns, CLOCK_MONOTONIC) for a timer.
     // = max(now + time_until_trigger, hold_until)
-    // time_until_trigger reflects the timer's period schedule from its last fire.
-    // hold_until enforces the MCR protocol offset (Y_i). Both must elapse before firing.
     auto next_fire_ns = [&](const std::string & name, int64_t hold_until) -> int64_t {
       auto grp_it = named.groups_by_name.find(name);
       if (grp_it == named.groups_by_name.end() || !grp_it->second) {
