@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <climits>
+#include <mutex>
 #include <ctime>
 #include <cerrno>
 #include <cstring>
@@ -145,21 +145,14 @@ public:
       return;
     }
 
-    // Atomically claim the transition slot — rejects concurrent MCRs.
-    {
-      int64_t cur = mcr_ban_until_.load(std::memory_order_acquire);
-      while (true) {
-        if (now_ns() < cur) {
-          RCLCPP_WARN(logger, "Mode transition already in progress; ignoring MCR");
-          return;
-        }
-        if (mcr_ban_until_.compare_exchange_weak(
-            cur, INT64_MAX,
-            std::memory_order_acq_rel, std::memory_order_acquire))
-        {
-          break;
-        }
-      }
+    std::unique_lock<std::mutex> mcr_lock(mcr_mutex_, std::try_to_lock);
+    if (!mcr_lock.owns_lock()) {
+      RCLCPP_WARN(logger, "Mode transition already in progress; ignoring MCR");
+      return;
+    }
+    if (now_ns() < mcr_ban_until_) {
+      RCLCPP_WARN(logger, "MCR ban window not yet elapsed; ignoring MCR");
+      return;
     }
 
     ModeEnumT old_mode = current_mode_.load();
@@ -182,7 +175,6 @@ public:
       RCLCPP_WARN(logger, "No named callbacks registered; applying mode switch directly");
       current_mode_.store(target_mode);
       this->chain_priority_allocator_ = alloc_it->second;
-      mcr_ban_until_.store(now_ns(), std::memory_order_release);  // re-open immediately
       return;
     }
 
@@ -195,7 +187,6 @@ public:
       RCLCPP_ERROR(
         logger,
         "mode_allocation_cache_ not populated; call spin() before modeUpdate()");
-      mcr_ban_until_.store(now_ns(), std::memory_order_release);  // re-open immediately
       return;
     }
     const auto & old_allocation = *old_cache_it->second;
@@ -345,7 +336,7 @@ public:
     for (int64_t next_fire : changed_set) {
       real_deadline = std::max(real_deadline, next_fire);
     }
-    mcr_ban_until_.store(real_deadline, std::memory_order_release);
+    mcr_ban_until_ = real_deadline;  // written under mcr_mutex_, released on scope exit
   }
 
   /// Invalidate the allocation cache when nodes are added/removed so
@@ -368,11 +359,14 @@ public:
     return current_mode_.load();
   }
 
-  /// Return whether a mode transition is currently in progress.
-  /// True while the MCR ban window has not yet elapsed.
+  /// Return whether a mode transition is currently in progress or the ban window is active.
   bool is_transition_in_progress() const
   {
-    return now_ns() < mcr_ban_until_.load(std::memory_order_acquire);
+    std::unique_lock<std::mutex> lock(mcr_mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+      return true;  // another MCR is actively running
+    }
+    return now_ns() < mcr_ban_until_;
   }
 
 protected:
@@ -431,9 +425,10 @@ private:
   StateT state_;
 
   ModeOffsetMap mode_offsets_;
-  // Nanosecond timestamp (CLOCK_MONOTONIC) before which a new MCR is rejected.
-  // 0 = open (first MCR always accepted). INT64_MAX = in-progress sentinel.
-  std::atomic<int64_t> mcr_ban_until_{0};
+  mutable std::mutex mcr_mutex_;
+  // Absolute CLOCK_MONOTONIC ns before which a new MCR is rejected (0 = open).
+  // Always read/written under mcr_mutex_.
+  int64_t mcr_ban_until_{0};
 };
 
 }  // namespace executors
