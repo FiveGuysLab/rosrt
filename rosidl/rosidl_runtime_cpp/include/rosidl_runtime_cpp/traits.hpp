@@ -162,6 +162,12 @@ template<typename T>
 inline void set_prio(T & msg, uint32_t prio);
 
 template<typename T>
+inline uint32_t get_chain_id(const T & msg);
+
+template<typename T>
+inline void set_chain_id(T & msg, uint32_t chain_id);
+
+template<typename T>
 struct has_fixed_size : std::false_type {};
 
 template<typename T>
