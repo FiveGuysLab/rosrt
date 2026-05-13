@@ -36,7 +36,8 @@ TEST(TestPublisherChainIdInstantiation, all_carrier_types_compile)
     rclcpp::init(0, nullptr);
     auto node = std::make_shared<rclcpp::Node>("test_publisher_chain_id_instantiation");
     auto pub = node->create_publisher<test_msgs::msg::Empty>("topic", 10);
-    auto timer = node->create_wall_timer(1s, []() {});
+    rclcpp::TimerBase::SharedPtr timer =
+      node->create_wall_timer(1s, []() {});
 
     // publish_as_source — exercises each carrier type for the outgoing message
     {
