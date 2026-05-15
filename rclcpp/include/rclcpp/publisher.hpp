@@ -235,25 +235,33 @@ public:
   template<typename T>
   void publish_as_source(T && message, rclcpp::TimerBase::SharedPtr & source)
   {
-    this->publish(message, source->source_chain_id.load(std::memory_order_acquire));
+    this->publish(
+      std::forward<T>(message),
+      source->source_chain_id.load(std::memory_order_acquire));
   }
 
   template<typename T, typename InheritedMessage>
   void publish_as_intermediate(T && message, std::unique_ptr<InheritedMessage> inherited_message)
   {
-    this->publish(message, rosidl_generator_traits::get_chain_id(*inherited_message));
+    this->publish(
+      std::forward<T>(message),
+      rosidl_generator_traits::get_chain_id(*inherited_message));
   }
 
   template<typename T, typename InheritedMessage>
   void publish_as_intermediate(T && message, const InheritedMessage & inherited_message)
   {
-    this->publish(message, rosidl_generator_traits::get_chain_id(inherited_message));
+    this->publish(
+      std::forward<T>(message),
+      rosidl_generator_traits::get_chain_id(inherited_message));
   }
 
   template<typename T, typename InheritedMessage>
   void publish_as_intermediate(T && message, std::shared_ptr<InheritedMessage> inherited_message)
   {
-    this->publish(message, rosidl_generator_traits::get_chain_id(*inherited_message));
+    this->publish(
+      std::forward<T>(message),
+      rosidl_generator_traits::get_chain_id(*inherited_message));
   }
 
   // NOTE: impossible to extract from type adapted source message. Would need big refactor to support. Would need to update callback signatures to accomdate them....
