@@ -36,226 +36,136 @@ ChainPriorityAllocator::ChainPriorityAllocator(
 
 ChainPriorityAllocation ChainPriorityAllocator::allocate(
   const std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> &
-  callback_groups_by_name)
+  callback_groups_by_name,
+  uint32_t chain_id_prefix)
 {
-  reset_state();
-  build_adjacency_list(callback_groups_by_name);
+  ChainPriorityAllocation allocation;
+  const auto logger = get_chain_priority_logger();
 
-  std::map<std::uint32_t, std::vector<int>> deadline_to_threadgroup_id_map;
-  for (const auto & pair : adjacency_list_) {
-    if (pair.second.indegree == 0) {
-      recursive_callback_traversal(pair.first, 0, 0, deadline_to_threadgroup_id_map);
-    }
+  // 1. Assign numeric chain IDs (chain_id 0 reserved as source/unresolved sentinel).
+  uint32_t next_id = chain_id_prefix + 1;
+  for (const auto & [name, chain] : *user_chains_) {
+    allocation.chain_name_to_id[name] = next_id++;
   }
 
-  std::uint16_t fixed_priority_counter = 1;
-  for (const auto & pair : deadline_to_threadgroup_id_map) {
-    for (const auto & threadgroup_id : pair.second) {
-      auto & threadgroup_info = threadgroup_callback_map_[threadgroup_id];
-      if (threadgroup_info.fixed_priority == 0) {
-        threadgroup_info.fixed_priority = fixed_priority_counter++;
+  // 2. Build chain priority map.
+  //    SCHED_FIFO: higher value = higher priority (range 1-99).
+  //    Tightest deadline -> highest priority, starting at 98 and decrementing.
+  //    99 is reserved for executor housekeeping threads.
+  std::map<uint32_t, std::vector<uint32_t>> deadline_to_chains;
+  for (const auto & [name, chain] : *user_chains_) {
+    deadline_to_chains[chain.deadline].push_back(allocation.chain_name_to_id[name]);
+  }
+  uint16_t prio = 98;
+  for (const auto & [deadline, cids] : deadline_to_chains) {
+    for (uint32_t cid : cids) {
+      allocation.chain_priority_map[cid] = prio;
+      if (prio > 1) {
+        prio--;
       }
     }
   }
 
-  ChainPriorityAllocation allocation;
-  allocation.threadgroups = threadgroup_callback_map_;
+  // 3. Compute per-callback init-time priority, period, and source_chain_id.
+  //    Priority: max SCHED_FIFO priority across all chains the callback appears in.
+  //    Period: period of the chain with the tightest (min) deadline.
+  //    source_chain_id: the chain_id corresponding to the tightest-deadline chain
+  //      (used by source timers to stamp outgoing messages).
+  std::unordered_map<std::string, uint32_t> callback_min_deadline;
+  for (const auto & [name, chain] : *user_chains_) {
+    uint32_t cid = allocation.chain_name_to_id[name];
+    uint16_t chain_prio = allocation.chain_priority_map[cid];
+    for (const auto & cb_name : chain.callbacks) {
+      // Init priority: keep max (higher value = higher priority = tighter deadline)
+      auto [prio_it, prio_newly_inserted] =
+        allocation.callback_init_priorities.emplace(cb_name, chain_prio);
+      if (!prio_newly_inserted && chain_prio > prio_it->second) {
+        prio_it->second = chain_prio;
+      }
 
-  const auto logger = get_chain_priority_logger();
-  for (const auto & pair : callback_map_) {
-    const auto & callback_info = pair.second;
-    if (callback_info.threadgroup_id == 0) {
-      RCLCPP_WARN(
-        logger,
-        "Callback '%s' was not assigned a threadgroup; skipping priority assignment",
-        pair.first.c_str());
-      continue;
-    }
-    const auto threadgroup_it = threadgroup_callback_map_.find(callback_info.threadgroup_id);
-    if (threadgroup_it == threadgroup_callback_map_.end() ||
-      threadgroup_it->second.fixed_priority == 0)
-    {
-      RCLCPP_WARN(
-        logger,
-        "Callback '%s' threadgroup '%d' missing priority; skipping priority assignment",
-        pair.first.c_str(),
-        callback_info.threadgroup_id);
-      continue;
-    }
-    allocation.callback_priorities.emplace(pair.first, threadgroup_it->second.fixed_priority);
-
-    const auto adj_it = adjacency_list_.find(pair.first);
-    if (adj_it != adjacency_list_.end()) {
-      allocation.callback_periods.emplace(pair.first, adj_it->second.min_deadline_period);
+      // Period and source_chain_id: track min deadline, use that chain's values
+      auto [dl_it, dl_inserted] = callback_min_deadline.emplace(cb_name, chain.deadline);
+      if (dl_inserted) {
+        allocation.callback_periods.emplace(cb_name, chain.period);
+        allocation.callback_source_chain_ids.emplace(cb_name, cid);
+      } else if (chain.deadline < dl_it->second) {
+        dl_it->second = chain.deadline;
+        allocation.callback_periods[cb_name] = chain.period;
+        allocation.callback_source_chain_ids[cb_name] = cid;
+      }
     }
   }
 
-  return allocation;
-}
+  // 4. Build routing map: (callback_name, incoming_chain_id) -> outgoing_chain_id
+  //    Process chains in deadline order (tightest first) so that shared prefix
+  //    entries from higher-priority chains are in the map when looser chains iterate.
+  //    Track the propagated chain_id through each chain — at shared prefix callbacks,
+  //    the chain_id stays locked to the tighter chain's id. At the diverge point,
+  //    the entry maps the propagated id to this chain's id.
+  std::vector<std::pair<std::string, uint32_t>> chains_by_deadline;
+  for (const auto & [name, chain] : *user_chains_) {
+    chains_by_deadline.emplace_back(name, chain.deadline);
+  }
+  std::sort(chains_by_deadline.begin(), chains_by_deadline.end(),
+    [](const auto & a, const auto & b) { return a.second < b.second; });
 
-void ChainPriorityAllocator::reset_state()
-{
-  adjacency_list_.clear();
-  threadgroup_adjacency_list_.clear();
-  mutex_threadgroup_map_.clear();
-  callback_map_.clear();
-  threadgroup_callback_map_.clear();
-  next_threadgroup_id_ = 1;
-}
+  for (const auto & [name, deadline] : chains_by_deadline) {
+    const auto & chain = user_chains_->at(name);
+    uint32_t cid = allocation.chain_name_to_id[name];
 
-void ChainPriorityAllocator::build_adjacency_list(
-  const std::unordered_map<std::string, rclcpp::CallbackGroup::SharedPtr> &
-  callback_groups_by_name)
-{
-  const auto logger = get_chain_priority_logger();
-  for (const auto & pair : callback_groups_by_name) {
-    if (!pair.second) {
+    // Simulates what chain_id the message will carry at each position in this
+    // chain at runtime. Initialized from the source timer's source_chain_id,
+    // then updated as we walk through callbacks. At shared prefix callbacks
+    // (already claimed by a tighter-deadline chain in the routing map), it stays
+    // locked to that chain's id. At the diverge point or unique callbacks, it
+    // flips to this chain's cid.
+    const auto & source_cb = chain.callbacks[0];
+    auto src_it = allocation.callback_source_chain_ids.find(source_cb);
+    if (src_it == allocation.callback_source_chain_ids.end()) {
       RCLCPP_WARN(
         logger,
-        "Callback '%s' has a null callback group; skipping",
-        pair.first.c_str());
+        "Chain '%s': source callback '%s' has no source_chain_id; skipping chain",
+        name.c_str(), source_cb.c_str());
       continue;
     }
-    callback_map_.emplace(
-      pair.first,
-      CallbackInfo{pair.first, pair.second, 0});
-  }
+    uint32_t expected_msg_chain_id = src_it->second;
 
-  for (const auto & chain_pair : *user_chains_) {
-    const auto & chain_name = chain_pair.first;
-    const auto & chain = chain_pair.second;
-    const auto & callbacks = chain.callbacks;
-
-    std::string prev_present;
-    bool has_prev = false;
-    for (const auto & callback_name : callbacks) {
-      if (callback_map_.find(callback_name) == callback_map_.end()) {
+    for (size_t i = 1; i < chain.callbacks.size(); ++i) {
+      const auto & cb_name = chain.callbacks[i];
+      if (callback_groups_by_name.find(cb_name) == callback_groups_by_name.end()) {
         RCLCPP_WARN(
           logger,
-          "Chain '%s' references unknown callback '%s'",
-          chain_name.c_str(),
-          callback_name.c_str());
-        has_prev = false;
+          "Chain '%s' references unknown callback '%s'; skipping",
+          name.c_str(), cb_name.c_str());
         continue;
       }
 
-      auto & adj_info = adjacency_list_[callback_name];
-      adj_info.deadlines.push_back(chain.deadline);
-      adj_info.periods.push_back(chain.period);
-      if (chain.deadline < adj_info.min_deadline) {
-        adj_info.min_deadline = chain.deadline;
-        adj_info.min_deadline_period = chain.period;
+      auto & inner = allocation.routing_map[cb_name];
+      auto existing = inner.find(expected_msg_chain_id);
+      if (existing != inner.end() && existing->second != cid) {
+        // Shared prefix: this callback already resolves expected_msg_chain_id
+        // to a different chain (tighter deadline, processed earlier). The message
+        // will carry that chain's id through this callback unchanged.
+        continue;
       }
 
-      if (has_prev) {
-        adjacency_list_[prev_present].outgoing.emplace(callback_name);
-        adjacency_list_[callback_name].indegree++;
-      }
-      prev_present = callback_name;
-      has_prev = true;
-    }
-  }
-}
-
-void ChainPriorityAllocator::recursive_callback_traversal(
-  const std::string & callback_name,
-  int threadgroup_id,
-  int prev_threadgroup_id,
-  std::map<std::uint32_t, std::vector<int>> & deadline_to_threadgroup_id_map)
-{
-  const auto logger = get_chain_priority_logger();
-  const auto callback_it = callback_map_.find(callback_name);
-  if (callback_it == callback_map_.end()) {
-    RCLCPP_WARN(
-      logger,
-      "Callback '%s' not registered; skipping traversal",
-      callback_name.c_str());
-    return;
-  }
-  auto & callback_info = callback_it->second;
-  if (callback_info.threadgroup_id != 0) {
-    return;
-  }
-
-  if (threadgroup_id) {
-    callback_info.threadgroup_id = threadgroup_id;
-  }
-
-  const bool is_mutex_group =
-    callback_info.callback_group &&
-    callback_info.callback_group->type() == rclcpp::CallbackGroupType::MutuallyExclusive;
-
-  if (threadgroup_id == 0 || is_mutex_group) {
-    int new_threadgroup_id;
-    if (is_mutex_group) {
-      auto existing_threadgroup_it = mutex_threadgroup_map_.find(callback_info.callback_group);
-      if (existing_threadgroup_it != mutex_threadgroup_map_.end()) {
-        new_threadgroup_id = existing_threadgroup_it->second;
-      } else {
-        new_threadgroup_id = generate_threadgroup_id();
-        mutex_threadgroup_map_[callback_info.callback_group] = new_threadgroup_id;
-        threadgroup_callback_map_[new_threadgroup_id].is_mutex_group = true;
-      }
-    } else {
-      new_threadgroup_id = generate_threadgroup_id();
-    }
-
-    threadgroup_callback_map_[new_threadgroup_id].callbacks.push_back(callback_name);
-    threadgroup_callback_map_[new_threadgroup_id].threadgroup_id = new_threadgroup_id;
-    callback_info.threadgroup_id = new_threadgroup_id;
-
-    const auto adj_it = adjacency_list_.find(callback_name);
-    if (adj_it != adjacency_list_.end()) {
-      deadline_to_threadgroup_id_map[adj_it->second.min_deadline].push_back(new_threadgroup_id);
-    }
-
-    if (threadgroup_id == 0) {
-      threadgroup_id = new_threadgroup_id;
-      if (prev_threadgroup_id != 0) {
-        threadgroup_adjacency_list_[prev_threadgroup_id].outgoing.insert(new_threadgroup_id);
-        threadgroup_adjacency_list_[new_threadgroup_id].incoming.insert(prev_threadgroup_id);
-      }
+      // Either new entry or confirms our chain. Insert and update.
+      inner.emplace(expected_msg_chain_id, cid);
+      expected_msg_chain_id = cid;
     }
   }
 
-  const auto adj_it = adjacency_list_.find(callback_name);
-  if (adj_it == adjacency_list_.end()) {
-    return;
+  RCLCPP_INFO(logger, "Chain priority allocation complete: %zu chains, %zu routing entries",
+    allocation.chain_name_to_id.size(), allocation.routing_map.size());
+  for (const auto & [cid, p] : allocation.chain_priority_map) {
+    RCLCPP_INFO(logger, "  chain_id %u -> SCHED_FIFO priority %u", cid, p);
   }
-  const auto & outgoing = adj_it->second.outgoing;
-  if (outgoing.empty()) {
-    return;
-  }
-
-  const auto & next_callback = *outgoing.begin();
-  if (outgoing.size() == 1) {
-    threadgroup_callback_map_[threadgroup_id].callbacks.push_back(next_callback);
+  for (const auto & [cb, p] : allocation.callback_init_priorities) {
+    RCLCPP_INFO(logger, "  callback '%s' -> init priority %u, period %u ns",
+      cb.c_str(), p, allocation.callback_periods[cb]);
   }
 
-  const auto next_adj_it = adjacency_list_.find(next_callback);
-  if (next_adj_it != adjacency_list_.end() && next_adj_it->second.indegree == 1) {
-    return recursive_callback_traversal(
-      next_callback,
-      threadgroup_id,
-      prev_threadgroup_id,
-      deadline_to_threadgroup_id_map);
-  }
-
-  for (const auto & next_callback_name : outgoing) {
-    if (!threadgroup_callback_map_[threadgroup_id].is_mutex_group) {
-      prev_threadgroup_id = threadgroup_id;
-    }
-    recursive_callback_traversal(
-      next_callback_name,
-      0,
-      threadgroup_id,
-      deadline_to_threadgroup_id_map);
-  }
-}
-
-int ChainPriorityAllocator::generate_threadgroup_id()
-{
-  return next_threadgroup_id_++;
+  return allocation;
 }
 
 }  // namespace detail

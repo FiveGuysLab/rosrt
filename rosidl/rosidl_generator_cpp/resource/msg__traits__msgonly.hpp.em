@@ -27,15 +27,15 @@ namespace rosidl_generator_traits
 {
 
 template<>
-inline uint32_t get_prio<@(message_typename)>(const @(message_typename) & msg)
+inline uint32_t get_chain_id<@(message_typename)>(const @(message_typename) & msg)
 {
-  return msg.internal_rclcpp_prio;
+  return msg.internal_rclcpp_chain_id;
 }
 
 template<>
-inline void set_prio<@(message_typename)>(@(message_typename) & msg, uint32_t prio)
+inline void set_chain_id<@(message_typename)>(@(message_typename) & msg, uint32_t chain_id)
 {
-  msg.internal_rclcpp_prio = prio;
+  msg.internal_rclcpp_chain_id = chain_id;
 }
 
 }  // namespace rosidl_generator_traits

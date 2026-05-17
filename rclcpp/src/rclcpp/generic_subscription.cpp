@@ -60,6 +60,30 @@ void GenericSubscription::handle_loaned_message(
           "handle_loaned_message is not implemented for GenericSubscription");
 }
 
+uint32_t GenericSubscription::get_message_chain_id(const std::shared_ptr<void> &)
+{
+  throw rclcpp::exceptions::UnimplementedError(
+          "get_message_chain_id is not implemented for GenericSubscription");
+}
+
+void GenericSubscription::set_message_chain_id(std::shared_ptr<void> &, uint32_t)
+{
+  throw rclcpp::exceptions::UnimplementedError(
+          "set_message_chain_id is not implemented for GenericSubscription");
+}
+
+uint32_t GenericSubscription::get_loaned_message_chain_id(void *)
+{
+  throw rclcpp::exceptions::UnimplementedError(
+          "get_loaned_message_chain_id is not implemented for GenericSubscription");
+}
+
+void GenericSubscription::set_loaned_message_chain_id(void *, uint32_t)
+{
+  throw rclcpp::exceptions::UnimplementedError(
+          "set_loaned_message_chain_id is not implemented for GenericSubscription");
+}
+
 void GenericSubscription::return_message(std::shared_ptr<void> & message)
 {
   auto typed_message = std::static_pointer_cast<rclcpp::SerializedMessage>(message);
@@ -70,16 +94,6 @@ void GenericSubscription::return_serialized_message(
   std::shared_ptr<rclcpp::SerializedMessage> & message)
 {
   message.reset();
-}
-
-uint32_t GenericSubscription::get_message_prio(const std::shared_ptr<void> &) {
-  throw rclcpp::exceptions::UnimplementedError(
-          "get_message_prio is not implemented for GenericSubscription");
-}
-
-uint32_t GenericSubscription::get_loaned_message_prio(void *) {
-  throw rclcpp::exceptions::UnimplementedError(
-          "get_loaned_message_prio is not implemented for GenericSubscription");
 }
 
 }  // namespace rclcpp

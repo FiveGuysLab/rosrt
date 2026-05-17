@@ -220,6 +220,17 @@ protected:
 
   std::shared_ptr<rclcpp::detail::ChainPriorityAllocator> chain_priority_allocator_;
 
+  /// Unified routing data covering all modes. Init-only writes; safe for
+  /// concurrent reads at runtime.
+  struct ChainRoutingData {
+    std::unordered_map<std::string, std::unordered_map<uint32_t, uint32_t>> routing_map;
+    std::unordered_map<uint32_t, uint16_t> chain_priority_map;
+  };
+  ChainRoutingData chain_routing_data_;
+
+  uint32_t
+  resolve_chain_priority(Executable & executable);
+
 private:
   void
   handle_subscription(rclcpp::CallbackGroup::SharedPtr callback_group, const rclcpp::SubscriptionBase::SharedPtr &subscription, size_t num_msgs);
@@ -250,6 +261,7 @@ private:
   // maps timer name to delay_next (relative ns; 0 = inactive)
   std::unordered_map<std::string, std::atomic<int64_t>> timer_delay_next_config_;
 
+protected:
   // maps callback name to CPU affinity mask for partitioned scheduling
   std::unordered_map<std::string, cpu_set_t> callback_affinity_masks_;
 };

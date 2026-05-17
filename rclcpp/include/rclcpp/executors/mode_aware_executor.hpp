@@ -215,11 +215,11 @@ public:
       bool in_old = old_cbs.count(cb_name) > 0;
       bool in_new = new_cbs.count(cb_name) > 0;
 
-      auto old_prio_it = old_allocation.callback_priorities.find(cb_name);
-      auto new_prio_it = new_allocation.callback_priorities.find(cb_name);
-      uint16_t old_prio = (old_prio_it != old_allocation.callback_priorities.end())
+      auto old_prio_it = old_allocation.callback_init_priorities.find(cb_name);
+      auto new_prio_it = new_allocation.callback_init_priorities.find(cb_name);
+      uint16_t old_prio = (old_prio_it != old_allocation.callback_init_priorities.end())
                             ? old_prio_it->second : 0;
-      uint16_t new_prio = (new_prio_it != new_allocation.callback_priorities.end())
+      uint16_t new_prio = (new_prio_it != new_allocation.callback_init_priorities.end())
                             ? new_prio_it->second : 0;
 
       // Look up chain periods from both allocations.
@@ -240,7 +240,7 @@ public:
       if (in_old && !in_new) {
         // (a) OLD-MODE COMPLETED / ABORTED: demote to best-effort immediately
         RCLCPP_INFO(logger, "  [OLD-ONLY] '%s' -> SCHED_OTHER", cb_name.c_str());
-        apply_sched_attr_to_entity(entity, SCHED_OTHER, 0);
+        entity->set_policy_priority(SCHED_OTHER, 0);
 
       } else if (!in_old && in_new) {
         // (b) WHOLLY NEW: apply FIFO + period immediately; timer held until MCR + Y_i
@@ -248,7 +248,7 @@ public:
           int64_t mcr_ns = (int64_t)mcr_time.tv_sec * 1'000'000'000L + mcr_time.tv_nsec;
           this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
         }
-        apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
+        entity->set_policy_priority(SCHED_FIFO, new_prio);
         if (new_period_ns > 0) {
           this->set_timer_period(cb_name, new_period_ns);
         }
@@ -262,7 +262,7 @@ public:
           int64_t mcr_ns = (int64_t)mcr_time.tv_sec * 1'000'000'000L + mcr_time.tv_nsec;
           this->set_timer_hold_until(cb_name, mcr_ns + offset_ns);
         }
-        apply_sched_attr_to_entity(entity, SCHED_FIFO, new_prio);
+        entity->set_policy_priority(SCHED_FIFO, new_prio);
         if (new_period_ns > 0) {
           this->set_timer_period(cb_name, new_period_ns);
         }
@@ -291,7 +291,28 @@ public:
       // else: not in either mode's chains — skip
     }
 
-    // Step 6: Update active allocator and current mode
+    // Step 6: Switch source timers to the new mode's chain_id. In-flight
+    // messages keep their old chain_id and resolve through the unified map.
+    auto chains_it = mode_chains_.find(target_mode);
+    if (chains_it != mode_chains_.end() && chains_it->second) {
+      for (const auto & [chain_name, chain] : *chains_it->second) {
+        if (chain.callbacks.empty()) {
+          continue;
+        }
+        const auto & source_cb = chain.callbacks.front();
+        auto source_it = named.entities_by_name.find(source_cb);
+        if (source_it == named.entities_by_name.end() || !source_it->second) {
+          continue;
+        }
+        auto src_id_it = new_allocation.callback_source_chain_ids.find(source_cb);
+        if (src_id_it == new_allocation.callback_source_chain_ids.end()) {
+          continue;
+        }
+        source_it->second->source_chain_id.store(
+          src_id_it->second, std::memory_order_release);
+      }
+    }
+
     current_mode_.store(target_mode);
     this->chain_priority_allocator_ = alloc_it->second;
 
@@ -328,19 +349,67 @@ public:
 
 protected:
   /// Pre-compute priority allocations for ALL modes as soon as nodes are registered.
-  /// Called by NoExecutor::spin() before the event loop starts.
+  /// Each mode gets a unique chain_id prefix (1 → 1000, 2 → 2000, ...) so all
+  /// chain IDs across modes are globally unique and merged into a single map.
   void apply_chain_priorities() override
   {
-    // Apply initial mode priorities via base class
-    NoExecutor::apply_chain_priorities();
-
-    // Eagerly populate the cache for every mode so modeUpdate() never computes allocations
     auto named = this->collect_named_entities();
+    if (named.groups_by_name.empty()) {
+      RCLCPP_WARN(
+        rclcpp::get_logger("ModeAwareExecutor"),
+        "No named callbacks registered; skipping chain priority allocation");
+      return;
+    }
+
+    this->chain_routing_data_.routing_map.clear();
+    this->chain_routing_data_.chain_priority_map.clear();
+    mode_allocation_cache_.clear();
+
+    uint32_t mode_index = 0;
     for (auto & [mode, allocator] : mode_allocators_) {
-      if (mode_allocation_cache_.find(mode) == mode_allocation_cache_.end()) {
-        mode_allocation_cache_[mode] =
-          std::make_shared<rclcpp::detail::ChainPriorityAllocation>(
-          allocator->allocate(named.groups_by_name));
+      uint32_t prefix = (mode_index + 1) * 1000;
+      auto alloc = allocator->allocate(named.groups_by_name, prefix);
+
+      for (const auto & [cb, inner] : alloc.routing_map) {
+        auto & dst = this->chain_routing_data_.routing_map[cb];
+        for (const auto & [in, out] : inner) {
+          dst.emplace(in, out);
+        }
+      }
+      for (const auto & [cid, prio] : alloc.chain_priority_map) {
+        this->chain_routing_data_.chain_priority_map.emplace(cid, prio);
+      }
+
+      mode_allocation_cache_[mode] =
+        std::make_shared<rclcpp::detail::ChainPriorityAllocation>(std::move(alloc));
+      mode_index++;
+    }
+
+    // Apply initial mode's per-callback init data to entities.
+    auto cache_it = mode_allocation_cache_.find(current_mode_.load());
+    if (cache_it == mode_allocation_cache_.end()) {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("ModeAwareExecutor"),
+        "Initial mode allocation missing; cannot apply init priorities");
+      return;
+    }
+    const auto & init_alloc = *cache_it->second;
+    for (const auto & [callback_name, priority] : init_alloc.callback_init_priorities) {
+      auto entity_it = named.entities_by_name.find(callback_name);
+      if (entity_it == named.entities_by_name.end() || !entity_it->second) {
+        continue;
+      }
+      auto & entity = entity_it->second;
+      apply_sched_attr_to_entity(entity, SCHED_FIFO, priority);
+
+      auto src_it = init_alloc.callback_source_chain_ids.find(callback_name);
+      if (src_it != init_alloc.callback_source_chain_ids.end()) {
+        entity->source_chain_id.store(src_it->second, std::memory_order_release);
+      }
+
+      auto affinity_it = this->callback_affinity_masks_.find(callback_name);
+      if (affinity_it != this->callback_affinity_masks_.end()) {
+        entity->set_cpu_affinity(affinity_it->second);
       }
     }
   }

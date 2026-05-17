@@ -129,7 +129,10 @@ public:
 
   void
   set_sched_attr(const sched::SchedAttr& sched_attr) override;
-  
+
+  void
+  set_policy_priority(uint32_t policy, uint32_t priority) override;
+
   void
   set_callback_name(const std::string & callback_name) override;
 
@@ -198,11 +201,6 @@ public:
 
   RCLCPP_PUBLIC
   virtual
-  uint32_t
-  get_message_prio(const std::shared_ptr<void> & message) = 0;
-
-  RCLCPP_PUBLIC
-  virtual
   void
   handle_serialized_message(
     const std::shared_ptr<rclcpp::SerializedMessage> & serialized_message,
@@ -216,7 +214,22 @@ public:
   RCLCPP_PUBLIC
   virtual
   uint32_t
-  get_loaned_message_prio(void * loaned_message) = 0;
+  get_message_chain_id(const std::shared_ptr<void> & message) = 0;
+
+  RCLCPP_PUBLIC
+  virtual
+  void
+  set_message_chain_id(std::shared_ptr<void> & message, uint32_t chain_id) = 0;
+
+  RCLCPP_PUBLIC
+  virtual
+  uint32_t
+  get_loaned_message_chain_id(void * loaned_message) = 0;
+
+  RCLCPP_PUBLIC
+  virtual
+  void
+  set_loaned_message_chain_id(void * loaned_message, uint32_t chain_id) = 0;
 
   /// Return the message borrowed in create_message.
   /** \param[in] message Shared pointer to the returned message. */
